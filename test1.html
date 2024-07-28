@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas Line Generator</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+        }
+
+        #myCanvas {
+            border: 1px solid black;
+            display: block;
+            margin-bottom: 20px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            padding: 0 20px;
+            box-sizing: border-box;
+        }
+
+        input[type="number"] {
+            font-size: 18px;
+            padding: 10px;
+            margin-bottom: 10px;
+            width: 300px;
+            text-align: center;
+            border: 2px solid #007bff;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+
+        .button-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+        }
+
+        button {
+            font-size: 16px;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button.active {
+            background-color: lightblue;
+            color: black;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <input type="number" id="lineCount" placeholder="Numero di linee" min="1">
+        <canvas id="myCanvas"></canvas>
+        <div class="button-container">
+            <button id="generate">Genera Rette</button>
+            <button id="save">Salva Disegno</button>
+            <button id="load">Carica Disegno</button>
+            <button id="clear">Svuota Disegno</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        const lineCountInput = document.getElementById('lineCount');
+        
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight - document.querySelector('.container').offsetHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas(); // Imposta le dimensioni iniziali
+
+        let lines = [];
+
+        const buttons = {
+            generate: document.getElementById('generate'),
+            save: document.getElementById('save'),
+            load: document.getElementById('load'),
+            clear: document.getElementById('clear')
+        };
+
+        function setButtonActive(buttonId) {
+            Object.values(buttons).forEach(button => button.classList.remove('active'));
+            if (buttons[buttonId]) {
+                buttons[buttonId].classList.add('active');
+            }
+        }
+
+        // Gestione del bottone "Genera Rette"
+        buttons.generate.addEventListener('click', () => {
+            const count = parseInt(lineCountInput.value);
+            if (isNaN(count) || count < 1) {
+                alert('Inserisci un numero valido maggiore di zero.');
+                return;
+            }
+            lines = generateRandomLines(count);
+            drawLines();
+            setButtonActive('generate');
+        });
+
+        // Funzione per generare linee casuali
+        function generateRandomLines(count) {
+            const lines = [];
+            for (let i = 0; i < count; i++) {
+                const x1 = Math.random() * canvas.width;
+                const y1 = Math.random() * canvas.height;
+                const x2 = Math.random() * canvas.width;
+                const y2 = Math.random() * canvas.height;
+                const color = getRandomColor(); // Ottieni un colore casuale
+                lines.push([{ x: x1, y: y1 }, { x: x2, y: y2 }, color]); // Aggiungi il colore alla linea
+            }
+            return lines;
+        }
+
+        // Funzione per generare un colore casuale in formato esadecimale
+        function getRandomColor() {
+            const letters = '0123456789ABCDEF';
+            let color = '#';
+            for (let i = 0; i < 6; i++) {
+                color += letters[Math.floor(Math.random() * 16)];
+            }
+            return color;
+        }
+
+        // Gestione del bottone "Salva Disegno"
+        buttons.save.addEventListener('click', () => {
+            const blob = new Blob([JSON.stringify(lines)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'lines.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            alert('Disegno salvato!');
+        });
+
+        // Gestione del bottone "Carica Disegno"
+        buttons.load.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                const reader = new FileReader();
+                reader.onload = () => {
+                    lines = JSON.parse(reader.result);
+                    drawLines();
+                    alert('Disegno caricato!');
+                };
+                reader.readAsText(file);
+            });
+            input.click();
+        });
+
+        // Gestione del bottone "Svuota Disegno"
+        buttons.clear.addEventListener('click', () => {
+            lines = [];
+            drawLines();
+            setButtonActive('');
+            alert('Disegno svuotato!');
+        });
+
+        // Funzione per disegnare le linee
+        function drawLines() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            lines.forEach(line => {
+                ctx.strokeStyle = line[2]; // Usa il colore specificato per la linea
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(line[0].x, line[0].y);
+                ctx.lineTo(line[1].x, line[1].y);
+                ctx.stroke();
+            });
+        }
+    </script>
+</body>
+</html>
