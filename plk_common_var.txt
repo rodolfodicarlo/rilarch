@@ -1,0 +1,31 @@
+// plk_common_var.rs
+
+// In Rust non abbiamo bisogno di dichiarare esplicitamente l'interfaccia e l'implementazione
+// come in Delphi. Tutto ciò che è pubblico è accessibile da altri moduli.
+
+// Non abbiamo bisogno di importare WinApi.Windows in Rust, a meno che non utilizziamo
+// funzioni specifiche di Windows, nel qual caso useremmo crate esterni.
+
+#[derive(Debug, Clone, Copy)]
+pub struct Point3Dd {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DoublePoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+// In Rust, non abbiamo bisogno di una sezione di implementazione vuota come in Delphi.
+// Se avessimo metodi per queste strutture, li implementeremmo qui.
+
+// impl Point3Dd {
+//     // Metodi per Point3Dd, se necessario
+// }
+
+// impl DoublePoint {
+//     // Metodi per DoublePoint, se necessario
+// }

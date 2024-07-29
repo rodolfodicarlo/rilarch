@@ -1,0 +1,310 @@
+// plk_dxf.rs
+
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::f64;
+use crate::plk_common_var::{Point3Dd, DoublePoint};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DxfEntityKind {
+    Line,
+    Arc,
+    Block,
+    Circle,
+    Dimension,
+    LWPolyline,
+    Face3D,
+    Polyline,
+    Point,
+    Solid,
+    Spline,
+    Text,
+    Retini,
+    Insert,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct IntDxfVertex {
+    pub p: Point3Dd,
+    pub start_width: f32,
+    pub end_width: f32,
+    pub bulge: f64,
+}
+
+pub type IntDxfVertexArray = Vec<IntDxfVertex>;
+
+#[derive(Debug, Clone)]
+pub enum IntDxfEntityVariants {
+    Arc {
+        center: Point3Dd,
+        radius: f64,
+        beg_angle: f64,
+        end_angle: f64,
+    },
+    Block {
+        idx: i32,
+        name: String,
+        scale_x: f64,
+        scale_y: f64,
+        scale_z: f64,
+        angle_z: f64,
+        point: Point3Dd,
+    },
+    Circle {
+        center: Point3Dd,
+        radius: f64,
+    },
+    Line {
+        point1: Point3Dd,
+        point2: Point3Dd,
+    },
+    LWPolyline {
+        vertex_count: i16,
+        closed: bool,
+        vertices: IntDxfVertexArray,
+        elev: f64,
+    },
+    Face3D {
+        point1: Point3Dd,
+        point2: Point3Dd,
+        point3: Point3Dd,
+        point4: Point3Dd,
+    },
+    Point {
+        center: Point3Dd,
+        point_size: f64,
+    },
+    Solid {
+        num_points: i32,
+        points: [Point3Dd; 4],
+    },
+    Spline {
+        n_vert: i16,
+        closed: bool,
+        rational: bool,
+        vertices: IntDxfVertexArray,
+    },
+    Text {
+        point1: Point3Dd,
+        point2: Point3Dd,
+        text1: String,
+        text2: String,
+        font: String,
+        style: String,
+        font_size: f64,
+        rect_w: f64,
+        rect_h: f64,
+        is_mtext: bool,
+        angle: f64,
+        v_giustificato: i32,
+        h_giustificato: i32,
+        direction: i32,
+        attach_point: i32,
+        ind_style: i16,
+    },
+    Retini {
+        n_vert: i32,
+        n_loop: i32,
+        vertices: IntDxfVertexArray,
+        name: String,
+        closed: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct IntDxfEntity {
+    pub layer: i16,
+    pub color: i32,
+    pub line_type: i16,
+    pub v: IntDxfEntityVariants,
+    pub block_f: bool,
+    pub ind_style: i16,
+    pub ind_dim_style: i16,
+    pub n_vert: i32,
+    pub insertion_point: Point3Dd,
+    pub rotation: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DXFBlock {
+    pub name: String,
+    pub entities: Vec<IntDxfEntity>,
+}
+
+pub struct PlkDxf {
+    blocks: Vec<DXFBlock>,
+    inserts: Vec<IntDxfEntity>,
+}
+
+impl PlkDxf {
+    pub fn new() -> Self {
+        PlkDxf {
+            blocks: Vec::new(),
+            inserts: Vec::new(),
+        }
+    }
+
+    pub fn load_dxf(&mut self, file_name: &str) -> std::io::Result<()> {
+        let file = File::open(file_name)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        let mut current_entity: Option<IntDxfEntity> = None;
+        let mut current_block = DXFBlock { name: String::new(), entities: Vec::new() };
+        let mut in_block = false;
+        let mut point_index = 0;
+
+        while let Some(Ok(line)) = lines.next() {
+            if let Ok(code) = line.parse::<i32>() {
+                if let Some(Ok(value)) = lines.next() {
+                    match code {
+                        0 => { // Entity type
+                            if let Some(entity) = current_entity.take() {
+                                if in_block {
+                                    current_block.entities.push(entity);
+                                } else if let IntDxfEntityVariants::Block { .. } = entity.v {
+                                    self.inserts.push(entity);
+                                }
+                            }
+
+                            current_entity = Some(IntDxfEntity {
+                                layer: 0,
+                                color: 0,
+                                line_type: 0,
+                                v: match value.as_str() {
+                                    "LINE" => IntDxfEntityVariants::Line { point1: Point3Dd { x: 0.0, y: 0.0, z: 0.0 }, point2: Point3Dd { x: 0.0, y: 0.0, z: 0.0 } },
+                                    "LWPOLYLINE" => IntDxfEntityVariants::LWPolyline { vertex_count: 0, closed: false, vertices: Vec::new(), elev: 0.0 },
+                                    "INSERT" => IntDxfEntityVariants::Block { idx: 0, name: String::new(), scale_x: 1.0, scale_y: 1.0, scale_z: 1.0, angle_z: 0.0, point: Point3Dd { x: 0.0, y: 0.0, z: 0.0 } },
+                                    _ => IntDxfEntityVariants::Line { point1: Point3Dd { x: 0.0, y: 0.0, z: 0.0 }, point2: Point3Dd { x: 0.0, y: 0.0, z: 0.0 } },
+                                },
+                                block_f: false,
+                                ind_style: 0,
+                                ind_dim_style: 0,
+                                n_vert: 0,
+                                insertion_point: Point3Dd { x: 0.0, y: 0.0, z: 0.0 },
+                                rotation: 0.0,
+                            });
+
+                            point_index = 0;
+
+                            if value == "BLOCK" {
+                                in_block = true;
+                                current_block = DXFBlock { name: String::new(), entities: Vec::new() };
+                            } else if value == "ENDBLK" {
+                                in_block = false;
+                                self.blocks.push(current_block.clone());
+                            }
+                        },
+                        2 => { // Block name
+                            if let Some(ref mut entity) = current_entity {
+                                if let IntDxfEntityVariants::Block { ref mut name, .. } = entity.v {
+                                    *name = value;
+                                }
+                            }
+                            if in_block {
+                                current_block.name = value;
+                            }
+                        },
+                        10 | 11 | 20 | 21 => { // X and Y coordinates
+                            if let Some(ref mut entity) = current_entity {
+                                let coord = value.parse::<f64>().unwrap_or(0.0);
+                                match entity.v {
+                                    IntDxfEntityVariants::Line { ref mut point1, ref mut point2 } => {
+                                        match code {
+                                            10 => point1.x = coord,
+                                            11 => point2.x = coord,
+                                            20 => point1.y = coord,
+                                            21 => point2.y = coord,
+                                            _ => {}
+                                        }
+                                    },
+                                    IntDxfEntityVariants::LWPolyline { ref mut vertex_count, ref mut vertices, .. } => {
+                                        if *vertex_count as usize <= point_index {
+                                            *vertex_count += 1;
+                                            vertices.push(IntDxfVertex { p: Point3Dd { x: 0.0, y: 0.0, z: 0.0 }, start_width: 0.0, end_width: 0.0, bulge: 0.0 });
+                                        }
+                                        match code {
+                                            10 => vertices[point_index].p.x = coord,
+                                            20 => {
+                                                vertices[point_index].p.y = coord;
+                                                point_index += 1;
+                                            },
+                                            _ => {}
+                                        }
+                                    },
+                                    IntDxfEntityVariants::Block { ref mut point, .. } => {
+                                        match code {
+                                            10 => point.x = coord,
+                                            20 => point.y = coord,
+                                            _ => {}
+                                        }
+                                    },
+                                    _ => {}
+                                }
+                            }
+                        },
+                        41 => { // X scale factor
+                            if let Some(ref mut entity) = current_entity {
+                                if let IntDxfEntityVariants::Block { ref mut scale_x, .. } = entity.v {
+                                    *scale_x = value.parse::<f64>().unwrap_or(1.0);
+                                }
+                            }
+                        },
+                        42 => { // Y scale factor
+                            if let Some(ref mut entity) = current_entity {
+                                if let IntDxfEntityVariants::Block { scale_x, ref mut scale_y, .. } = entity.v {
+                                    *scale_y = value.parse::<f64>().unwrap_or(scale_x);
+                                }
+                            }
+                        },
+                        50 => { // Rotation angle
+                            if let Some(ref mut entity) = current_entity {
+                                if let IntDxfEntityVariants::Block { ref mut angle_z, .. } = entity.v {
+                                    *angle_z = value.parse::<f64>().unwrap_or(0.0);
+                                }
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if let Some(entity) = current_entity.take() {
+            if in_block {
+                current_block.entities.push(entity);
+            } else if let IntDxfEntityVariants::Block { .. } = entity.v {
+                self.inserts.push(entity);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn clear_inserts(&mut self) {
+        self.inserts.clear();
+    }
+
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub fn insert_count(&self) -> usize {
+        self.inserts.len()
+    }
+
+    pub fn get_block(&self, index: usize) -> Option<&DXFBlock> {
+        self.blocks.get(index)
+    }
+
+    pub fn get_insert(&self, index: usize) -> Option<&IntDxfEntity> {
+        self.inserts.get(index)
+    }
+}
+
+impl Drop for PlkDxf {
+    fn drop(&mut self) {
+        self.clear_inserts();
+    }
+}

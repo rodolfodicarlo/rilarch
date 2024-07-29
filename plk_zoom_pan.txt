@@ -1,0 +1,281 @@
+// plk_zoom_pan.rs
+
+use std::f64::consts::PI;
+use crate::plk_common_var::{Point3Dd, DoublePoint};
+use crate::plk_dxf::PlkDxf, IntDxfEntity, DXFBlock, DxfEntityKind};
+
+pub struct PlkZoomPan {
+    zoom_factor: f64,
+    offset_x: f64,
+    offset_y: f64,
+    is_panning: bool,
+    last_mouse_pos: (i32, i32),
+    paint_box: PaintBox,
+    dxf_document: PlkDxf,
+}
+
+pub struct PaintBox {
+    pub width: i32,
+    pub height: i32,
+    // Altri campi necessari
+}
+
+impl PlkZoomPan {
+    pub fn new(paint_box: PaintBox, dxf_document: PlkDxf) -> Self {
+        Self {
+            zoom_factor: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            is_panning: false,
+            last_mouse_pos: (0, 0),
+            paint_box,
+            dxf_document,
+        }
+    }
+
+    fn transform_point(&self, p: &Point3Dd, insert: &IntDxfEntity) -> DoublePoint {
+        let cos_angle = (insert.v.angle_z.to_radians()).cos();
+        let sin_angle = (insert.v.angle_z.to_radians()).sin();
+
+        let scale_x = if insert.v.scale_x.abs() < 0.00001 { 1.0 } else { insert.v.scale_x };
+        let scale_y = if insert.v.scale_y.abs() < 0.00001 { 1.0 } else { insert.v.scale_y };
+
+        let scaled_x = p.x * scale_x;
+        let scaled_y = p.y * scale_y;
+        let rotated_x = scaled_x * cos_angle - scaled_y * sin_angle;
+        let rotated_y = scaled_x * sin_angle + scaled_y * cos_angle;
+
+        DoublePoint {
+            x: rotated_x + insert.v.b_point.x,
+            y: rotated_y + insert.v.b_point.y,
+        }
+    }
+
+    pub fn zoom_all(&mut self) {
+        if self.dxf_document.block_count() == 0 || self.dxf_document.insert_count() == 0 {
+            return;
+        }
+
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+        let mut is_first = true;
+
+        for i in 0..self.dxf_document.insert_count() {
+            let insert = self.dxf_document.get_insert(i).unwrap();
+            if let DxfEntityKind::Block = insert.v.kind {
+                self.update_bounds(&mut min_x, &mut min_y, &mut max_x, &mut max_y, insert.v.b_point.x, insert.v.b_point.y, &mut is_first);
+
+                for j in 0..self.dxf_document.block_count() {
+                    let block = self.dxf_document.get_block(j).unwrap();
+                    if block.name == insert.v.b_name {
+                        for entity in &block.entities {
+                            match entity.v.kind {
+                                DxfEntityKind::Line => {
+                                    let p1 = self.transform_point(&entity.v.point1, insert);
+                                    let p2 = self.transform_point(&entity.v.point2, insert);
+                                    self.update_bounds(&mut min_x, &mut min_y, &mut max_x, &mut max_y, p1.x, p1.y, &mut is_first);
+                                    self.update_bounds(&mut min_x, &mut min_y, &mut max_x, &mut max_y, p2.x, p2.y, &mut is_first);
+                                },
+                                DxfEntityKind::LWPolyline => {
+                                    for vertex in &entity.v.lp_vertices {
+                                        let p = self.transform_point(&vertex.p, insert);
+                                        self.update_bounds(&mut min_x, &mut min_y, &mut max_x, &mut max_y, p.x, p.y, &mut is_first);
+                                    }
+                                },
+                                // Aggiungi altri casi per altri tipi di entità se necessario
+                                _ => {},
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !is_first {
+            let width = max_x - min_x;
+            let height = max_y - min_y;
+
+            if width > 0.0 && height > 0.0 {
+                self.zoom_factor = (self.paint_box.width as f64 / width).min(self.paint_box.height as f64 / height) * 0.9;
+                self.offset_x = (self.paint_box.width as f64 - width * self.zoom_factor) / 2.0 - min_x * self.zoom_factor;
+                self.offset_y = (self.paint_box.height as f64 + height * self.zoom_factor) / 2.0 + min_y * self.zoom_factor;
+            }
+        }
+
+        // Invalidate paint_box
+    }
+
+    fn update_bounds(&self, min_x: &mut f64, min_y: &mut f64, max_x: &mut f64, max_y: &mut f64, x: f64, y: f64, is_first: &mut bool) {
+        if *is_first {
+            *min_x = x;
+            *max_x = x;
+            *min_y = y;
+            *max_y = y;
+            *is_first = false;
+        } else {
+            *min_x = (*min_x).min(x);
+            *max_x = (*max_x).max(x);
+            *min_y = (*min_y).min(y);
+            *max_y = (*max_y).max(y);
+        }
+    }
+
+    pub fn handle_mouse_wheel(&mut self, wheel_delta: i32, mouse_pos: (i32, i32)) {
+        let zoom_center = self.paint_box_screen_to_client(mouse_pos);
+        let old_zoom_factor = self.zoom_factor;
+
+        if wheel_delta > 0 {
+            self.zoom_factor *= 1.1;
+        } else {
+            self.zoom_factor /= 1.1;
+        }
+
+        self.offset_x = zoom_center.0 as f64 - (zoom_center.0 as f64 - self.offset_x) * (self.zoom_factor / old_zoom_factor);
+        self.offset_y = zoom_center.1 as f64 - (zoom_center.1 as f64 - self.offset_y) * (self.zoom_factor / old_zoom_factor);
+
+        // Invalidate paint_box
+    }
+
+    pub fn handle_mouse_down(&mut self, button: MouseButton, x: i32, y: i32) {
+        if button == MouseButton::Left {
+            self.is_panning = true;
+            self.last_mouse_pos = (x, y);
+        }
+    }
+
+    pub fn handle_mouse_move(&mut self, x: i32, y: i32) {
+        if self.is_panning {
+            self.offset_x += (x - self.last_mouse_pos.0) as f64;
+            self.offset_y += (y - self.last_mouse_pos.1) as f64;
+            self.last_mouse_pos = (x, y);
+            // Invalidate paint_box
+        }
+    }
+
+    pub fn handle_mouse_up(&mut self, button: MouseButton, _x: i32, _y: i32) {
+        if button == MouseButton::Left {
+            self.is_panning = false;
+        }
+    }
+
+    pub fn mouse_to_drawing_coords(&self, x: i32, y: i32) -> DoublePoint {
+        DoublePoint {
+            x: (x as f64 - self.offset_x) / self.zoom_factor,
+            y: -(y as f64 - self.offset_y) / self.zoom_factor,
+        }
+    }
+
+    pub fn draw_entities(&self, canvas: &mut Canvas) {
+        canvas.set_pen_color(Color::Black);
+        canvas.set_pen_width(1);
+
+        for i in 0..self.dxf_document.insert_count() {
+            let insert = self.dxf_document.get_insert(i).unwrap();
+            if let DxfEntityKind::Block = insert.v.kind {
+                // Disegna il punto di riferimento
+                canvas.set_pen_color(Color::Red);
+                canvas.draw_ellipse(
+                    (insert.v.b_point.x * self.zoom_factor + self.offset_x - 3.0) as i32,
+                    (-insert.v.b_point.y * self.zoom_factor + self.offset_y - 3.0) as i32,
+                    (insert.v.b_point.x * self.zoom_factor + self.offset_x + 3.0) as i32,
+                    (-insert.v.b_point.y * self.zoom_factor + self.offset_y + 3.0) as i32
+                );
+
+                canvas.set_pen_color(Color::Black);
+
+                for j in 0..self.dxf_document.block_count() {
+                    let block = self.dxf_document.get_block(j).unwrap();
+                    if block.name == insert.v.b_name {
+                        for entity in &block.entities {
+                            match entity.v.kind {
+                                DxfEntityKind::Line => {
+                                    let p1 = self.transform_point(&entity.v.point1, insert);
+                                    let p2 = self.transform_point(&entity.v.point2, insert);
+                                    canvas.move_to(
+                                        (p1.x * self.zoom_factor + self.offset_x) as i32,
+                                        (-p1.y * self.zoom_factor + self.offset_y) as i32
+                                    );
+                                    canvas.line_to(
+                                        (p2.x * self.zoom_factor + self.offset_x) as i32,
+                                        (-p2.y * self.zoom_factor + self.offset_y) as i32
+                                    );
+                                },
+                                DxfEntityKind::LWPolyline => {
+                                    if entity.v.lp_vertex_count > 0 {
+                                        let p1 = self.transform_point(&entity.v.lp_vertices[0].p, insert);
+                                        canvas.move_to(
+                                            (p1.x * self.zoom_factor + self.offset_x) as i32,
+                                            (-p1.y * self.zoom_factor + self.offset_y) as i32
+                                        );
+                                        for l in 1..entity.v.lp_vertex_count {
+                                            let p2 = self.transform_point(&entity.v.lp_vertices[l as usize].p, insert);
+                                            canvas.line_to(
+                                                (p2.x * self.zoom_factor + self.offset_x) as i32,
+                                                (-p2.y * self.zoom_factor + self.offset_y) as i32
+                                            );
+                                        }
+                                        if entity.v.lp_closed {
+                                            canvas.line_to(
+                                                (p1.x * self.zoom_factor + self.offset_x) as i32,
+                                                (-p1.y * self.zoom_factor + self.offset_y) as i32
+                                            );
+                                        }
+                                    }
+                                },
+                                // Aggiungi altri casi per gli altri tipi di entità se necessario
+                                _ => {},
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn paint_box_screen_to_client(&self, point: (i32, i32)) -> (i32, i32) {
+        // Implementazione della conversione da coordinate schermo a client
+        point // Placeholder
+    }
+}
+
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+pub struct Canvas {
+    // Implementazione necessaria
+}
+
+impl Canvas {
+    pub fn set_pen_color(&mut self, color: Color) {
+        // Implementazione
+    }
+
+    pub fn set_pen_width(&mut self, width: i32) {
+        // Implementazione
+    }
+
+    pub fn draw_ellipse(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) {
+        // Implementazione
+    }
+
+    pub fn move_to(&mut self, x: i32, y: i32) {
+        // Implementazione
+    }
+
+    pub fn line_to(&mut self, x: i32, y: i32) {
+        // Implementazione
+    }
+}
+
+pub enum Color {
+    Black,
+    Red,
+    // Altri colori necessari
+}
